@@ -8,7 +8,7 @@ Rules come from .env:
     AUTO_START_DATE=2026-10-05      first day of the first window
     AUTO_END_DATE=2026-12-11        last day a meeting may be booked
     AUTO_INTERVAL_DAYS=14           window length (one booking per window)
-    AUTO_TIME_WINDOW=11:00-13:00    the whole meeting must fit inside this
+    AUTO_TIME_WINDOW=11:00-22:00    the whole meeting must fit inside this
 """
 import json
 import os
@@ -49,7 +49,7 @@ def load_rules() -> Rules:
     missing = [k for k in ("AUTO_START_DATE", "AUTO_END_DATE") if not os.getenv(k)]
     if missing:
         raise RuntimeError(f"Set {', '.join(missing)} in .env to use --auto.")
-    earliest, latest = os.getenv("AUTO_TIME_WINDOW", "11:00-13:00").split("-")
+    earliest, latest = os.getenv("AUTO_TIME_WINDOW", "11:00-22:00").split("-")
     return Rules(
         start_date=date.fromisoformat(os.environ["AUTO_START_DATE"]),
         end_date=date.fromisoformat(os.environ["AUTO_END_DATE"]),
@@ -76,7 +76,6 @@ def record_booking(start: str, end: str, description: str, mode: str):
         "end": end,
         "description": description,
         "mode": mode,
-        "booking_url": os.getenv("BOOKING_URL", ""),
         "booked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     })
     with open(LOG_FILE, "w") as f:
@@ -84,15 +83,8 @@ def record_booking(start: str, end: str, description: str, mode: str):
 
 
 def booked_windows(rules: Rules) -> set[int]:
-    """Windows already booked on the CURRENT booking page (BOOKING_URL).
-
-    Bookings made on a different page (e.g. a test calendar) don't count.
-    """
-    url = os.getenv("BOOKING_URL", "")
     out = set()
     for b in load_log():
-        if b.get("booking_url", url) != url:
-            continue
         d = datetime.fromisoformat(b["start"]).astimezone(rules.tz).date()
         if rules.start_date <= d <= rules.end_date:
             out.add(rules.window_index(d))
