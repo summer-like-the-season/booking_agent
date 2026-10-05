@@ -9,6 +9,7 @@ Usage:
 import argparse
 import json
 import os
+import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -242,7 +243,8 @@ def main():
     # sign-in tab (in your normal browser) isn't hidden behind a waiting window.
     # Scheduled runs can't click through a sign-in page, so they fail with a clear error instead.
     print("Checking Google sign-in (a browser tab opens if you need to approve)...")
-    get_credentials(interactive=not opts.auto)
+    # A person at a terminal can always sign in; scheduled runs (launchd, GitHub) have no terminal.
+    get_credentials(interactive=sys.stdin.isatty())
     print("Google sign-in OK. Opening the booking page...")
 
     browser = BookingBrowser(

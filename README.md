@@ -98,7 +98,7 @@ Every booking, by hand or automatic, is recorded in `bookings.json`. That's how 
 
 ### Step 1: keep Google from signing you out every 7 days
 
-Apps in Testing mode lose their Google sign-in after 7 days, which would break the daily runs. In Google Cloud, go to **Google Auth Platform → Audience** (or **OAuth consent screen**) and click **Publish app** to switch to **In production**. You don't need to submit it for verification. It stays private to your account, and the sign-in page keeps showing the "unverified app" warning, which is fine. Then delete `token.json` and run a dry run once to sign in again.
+Apps in Testing mode lose their Google sign-in after 7 days, which would break the daily runs. In Google Cloud, go to **Google Auth Platform → Audience** (or **OAuth consent screen**) and click **Publish app** to switch to **In production**. You don't need to submit it for verification. It stays private to your account, and the sign-in page keeps showing the "unverified app" warning, which is fine. Then delete `token.json` and run `python google_auth.py` to sign in again.
 
 ### Step 2: set the rules and test them
 
@@ -110,26 +110,102 @@ python agent.py --auto --dry-run
 
 The terminal shows `[rules]` lines, saying whether each slot Claude tried passed or was refused and why.
 
-### Step 3: install the daily schedule
+### Step 3 (recommended): watch for new slots
+
+Google doesn't notify you when the schedule owner adds availability, so `watch.py` checks the page every few minutes instead. The check uses no AI and costs nothing; it starts the Claude agent (`agent.py --auto`) only when slots appear that weren't there at the previous check.
+
+First, confirm the watcher can see the slots:
+
+```bash
+python watch.py --show
+```
+
+It should list each month, the clickable days, and their times, matching what you see on the booking page in your browser. If it shows 0 clickable days while the page clearly has slots, the page is laid out differently than expected; fix that before going further.
+
+Then install it:
 
 ```bash
 chmod +x schedule_mac.sh
-./schedule_mac.sh install 7 5     # every day at 7:05am; change the hour and minute as you like
+./schedule_mac.sh watch 10        # check every 10 minutes (minimum 5)
+./schedule_mac.sh test
+tail -f logs/auto.log
+```
+
+The first check treats every visible slot as new and runs the agent once. After that, the agent only runs when something changes. What the watcher has seen is stored in `watch_state.json`; delete that file to make the next check start fresh.
+
+### Step 3 (alternative): run at fixed times instead
+
+```bash
+chmod +x schedule_mac.sh
+./schedule_mac.sh install 7:05 12:05 17:05   # every day at these times (24-hour clock)
 ./schedule_mac.sh test            # run it once right now
 tail -f logs/auto.log             # watch the output (Ctrl+C stops watching, not the job)
 ```
 
-If the Mac is asleep at 7:05, the run happens when it wakes. If it's shut down, that day is skipped. A browser window pops up during each run; set `HEADLESS=true` in `.env` to hide it. If you hide it and runs start failing, set it back, since Google sometimes treats hidden browsers differently.
+You can list as many times as you like. To change them, run `install` again with the new list; it replaces the old schedule. If the Mac is asleep at a scheduled time, the run happens when it wakes (several missed times collapse into one run). If it's shut down, that day is skipped. A browser window pops up during each run; set `HEADLESS=true` in `.env` to hide it. If you hide it and runs start failing, set it back, since Google sometimes treats hidden browsers differently.
 
 To stop the daily runs: `./schedule_mac.sh uninstall`. To check on them: `./schedule_mac.sh status`.
 
 ### What you'll get
 
 - **A booking:** an email to `NOTIFY_EMAIL`, plus the calendar invite for your-name@ucsb.edu.
-- **A failed run** (for example, an expired API key or Google sign-in): an email titled "Booking agent: automatic run failed". Fix the problem, then run `python agent.py --auto --dry-run` by hand to confirm.
+- **A failed run** (for example, an expired API key or Google sign-in): an email titled "Booking agent: automatic run failed". Fix the problem (for an expired Google sign-in, run `python google_auth.py`), then run `python agent.py --auto --dry-run` to confirm.
 - **Nothing available:** no email. Check `logs/auto.log` if you want to see what it looked at.
 
-Each run costs a small amount of API credit. Check **Usage** in the Claude Console after a few days to see what it adds up to. Your API key's expiry date also applies here; renew it in `.env` before it runs out.
+Each agent run costs a small amount of API credit; the watcher's checks are free. Check **Usage** in the Claude Console after a few days to see what it adds up to. Your API key's expiry date also applies here; renew it in `.env` before it runs out.
+
+## 6. Run it in the cloud with GitHub Actions (no laptop needed)
+
+`.github/workflows/watch.yml` runs the watcher on GitHub's servers about every 5 minutes. It's free for public repos. GitHub sometimes starts scheduled runs 5–15 minutes late, or skips one when busy.
+
+**Run only one watcher.** Your laptop and GitHub keep separate booking logs, so if both run, both could book the same window. Turn the laptop one off first:
+
+```bash
+./schedule_mac.sh uninstall
+```
+
+### Step 1: make sure the Google sign-in won't expire
+
+The Google app must be **In production** (section 5, step 1). Otherwise Google ends the sign-in after 7 days and the cloud runs stop. After publishing, delete `token.json`, run `python google_auth.py` on your laptop to sign in again, and use that new `token.json` below.
+
+### Step 2: add the secrets
+
+On GitHub, open the repo → **Settings → Secrets and variables → Actions → Secrets → New repository secret**. Add one secret per row. Copy each value from your `.env` without quotes:
+
+| Secret name | Value |
+|---|---|
+| `ANTHROPIC_API_KEY` | your `sk-ant-...` key |
+| `BOOKING_URL` | the booking page link |
+| `BOOKER_FIRST_NAME` | as in `.env` |
+| `BOOKER_LAST_NAME` | as in `.env` |
+| `BOOKER_EMAIL` | your Gmail address |
+| `INVITE_EMAILS` | your UCSB address |
+| `NOTIFY_EMAIL` | your UCSB address |
+| `BUSY_CALENDARS` | e.g. `primary,your-name@ucsb.edu` |
+| `GOOGLE_TOKEN_JSON` | the **entire contents** of `token.json` (open it in VS Code, select all, copy) |
+
+Secrets are encrypted. Because the repo is public, its Actions logs are public too, but GitHub replaces any secret value that appears in a log with `***`.
+
+### Step 3 (optional): change the booking rules
+
+The rules default to the values in `.env.example`. To change them, go to the **Variables** tab (next to Secrets) and add any of `AUTO_START_DATE`, `AUTO_END_DATE`, `AUTO_INTERVAL_DAYS`, `AUTO_TIME_WINDOW`, `TIMEZONE`. The next run uses them, with no code change needed.
+
+### Step 4: push the workflow and test it
+
+Commit and push (Source Control → Commit → Sync). Then on GitHub:
+
+1. Go to **Actions → Watch booking page → Run workflow**, choose **show**, and click **Run workflow**.
+2. Open the run and expand **Check the booking page**. It should list the month(s), clickable days and times, matching the page in your browser. If it errors or shows a month as `month+0`, Google isn't showing the page to GitHub's servers; stop and fix that before relying on it.
+3. Optionally run it again with **dry-run** to watch a full check without booking.
+
+After that, the schedule runs on its own in **live** mode. You'll get the usual emails for bookings and agent failures.
+
+### Good to know
+
+- **Booking log:** `bookings.json` and the watcher's memory are kept between runs in GitHub's private Actions cache, not in the repo. To start fresh, delete the caches named `booking-state-...` under **Actions → Caches**.
+- **Failure emails from GitHub:** if a run fails (for example, the page can't be loaded), GitHub may email you about it. You can change that under your GitHub **Settings → Notifications → Actions**.
+- **60-day pause:** GitHub pauses scheduled workflows in public repos after 60 days without a commit. It emails a warning first; re-enable it from the Actions tab.
+- **To stop the cloud watcher:** Actions → Watch booking page → **⋯ → Disable workflow**.
 
 ## Troubleshooting
 

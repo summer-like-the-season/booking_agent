@@ -1,5 +1,14 @@
+# Secrets and personal data: never commit these
 .env
 credentials.json
 token.json
+bookings.json
+
+# Local state
 browser-profile/
+logs/
 .venv/
+__pycache__/
+.DS_Store
+watch_state.json
+state/

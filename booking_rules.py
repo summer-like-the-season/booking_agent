@@ -76,6 +76,7 @@ def record_booking(start: str, end: str, description: str, mode: str):
         "end": end,
         "description": description,
         "mode": mode,
+        "booking_url": os.getenv("BOOKING_URL", ""),
         "booked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     })
     with open(LOG_FILE, "w") as f:
@@ -83,8 +84,15 @@ def record_booking(start: str, end: str, description: str, mode: str):
 
 
 def booked_windows(rules: Rules) -> set[int]:
+    """Windows already booked on the CURRENT booking page (BOOKING_URL).
+
+    Bookings made on a different page (e.g. a test calendar) don't count.
+    """
+    url = os.getenv("BOOKING_URL", "")
     out = set()
     for b in load_log():
+        if b.get("booking_url", url) != url:
+            continue
         d = datetime.fromisoformat(b["start"]).astimezone(rules.tz).date()
         if rules.start_date <= d <= rules.end_date:
             out.add(rules.window_index(d))

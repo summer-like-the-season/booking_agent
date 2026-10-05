@@ -1,0 +1,115 @@
+# Runs the booking-page watcher on GitHub's servers, so your laptop doesn't need to be awake.
+#
+# - Every ~5 minutes (GitHub may run schedules late or occasionally skip one).
+# - Or by hand: Actions tab -> "Watch booking page" -> Run workflow, and pick a mode:
+#     show     = only list the slots the watcher can see (changes nothing)
+#     dry-run  = full check; if there are new slots, run the agent without booking
+#     live     = full check; book qualifying slots (what the schedule does)
+#
+# Setup (secrets and variables) is in README section 6.
+
+name: Watch booking page
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run"
+        type: choice
+        options: [show, dry-run, live]
+        default: show
+
+# Never run two checks at once (they share the booking log).
+concurrency:
+  group: booking-watcher
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Secrets: GitHub hides these values if they ever appear in the (public) logs.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BOOKING_URL: ${{ secrets.BOOKING_URL }}
+      BOOKER_FIRST_NAME: ${{ secrets.BOOKER_FIRST_NAME }}
+      BOOKER_LAST_NAME: ${{ secrets.BOOKER_LAST_NAME }}
+      BOOKER_EMAIL: ${{ secrets.BOOKER_EMAIL }}
+      INVITE_EMAILS: ${{ secrets.INVITE_EMAILS }}
+      NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+      BUSY_CALENDARS: ${{ secrets.BUSY_CALENDARS }}
+      # Booking rules: change them under Settings -> Secrets and variables -> Actions -> Variables.
+      AUTO_START_DATE: ${{ vars.AUTO_START_DATE || '2026-10-05' }}
+      AUTO_END_DATE: ${{ vars.AUTO_END_DATE || '2026-12-11' }}
+      AUTO_INTERVAL_DAYS: ${{ vars.AUTO_INTERVAL_DAYS || '14' }}
+      AUTO_TIME_WINDOW: ${{ vars.AUTO_TIME_WINDOW || '11:00-13:00' }}
+      TIMEZONE: ${{ vars.TIMEZONE || 'America/Los_Angeles' }}
+      HEADLESS: "true"
+      PYTHONUNBUFFERED: "1"
+      MODE: ${{ inputs.mode || 'live' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+
+      - name: Cache the Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Install the browser
+        run: playwright install --with-deps chromium
+
+      # The booking log and the watcher's memory are carried between runs in
+      # GitHub's private Actions cache (not committed to the public repo).
+      - name: Restore booking log and watcher memory
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: booking-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: booking-state-
+
+      - name: Prepare files
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        run: |
+          if [ -z "$GOOGLE_TOKEN_JSON" ] || [ -z "$BOOKING_URL" ] || [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::Missing secrets. See README section 6."; exit 1
+          fi
+          printf '%s' "$GOOGLE_TOKEN_JSON" > token.json
+          mkdir -p state
+          cp state/bookings.json state/watch_state.json . 2>/dev/null || true
+          if [ -f bookings.json ]; then echo "Booking log: $(python -c 'import json;print(len(json.load(open("bookings.json"))))') booking(s) so far."; else echo "Booking log: empty."; fi
+
+      - name: Check the booking page
+        run: |
+          case "$MODE" in
+            show)    python watch.py --show ;;
+            dry-run) python watch.py --dry-run ;;
+            *)       python watch.py ;;
+          esac
+
+      - name: Keep booking log and watcher memory for the next run
+        if: always()
+        run: |
+          mkdir -p state
+          cp bookings.json watch_state.json state/ 2>/dev/null || true
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state
+          key: booking-state-${{ github.run_id }}-${{ github.run_attempt }}

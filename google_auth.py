@@ -51,8 +51,9 @@ def get_credentials(interactive: bool = True):
         if not creds or not creds.valid:
             if not interactive:
                 raise SignInNeeded(
-                    "Google sign-in has expired. Run `python agent.py --dry-run --auto` "
-                    "once by hand to sign in again."
+                    "Google sign-in has expired or is missing. Sign in again from a terminal on "
+                    "your laptop with:  python google_auth.py   then update token.json (or the "
+                    "GOOGLE_TOKEN_JSON secret on GitHub)."
                 )
             creds = _sign_in()
         with open("token.json", "w") as f:
@@ -60,3 +61,11 @@ def get_credentials(interactive: bool = True):
 
     _creds = creds
     return _creds
+
+
+if __name__ == "__main__":
+    # `python google_auth.py` signs in (or confirms you're signed in) and saves token.json.
+    from dotenv import load_dotenv
+    load_dotenv()
+    get_credentials(interactive=True)
+    print("Google sign-in OK. token.json is ready.")
